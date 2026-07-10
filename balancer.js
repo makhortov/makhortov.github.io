@@ -388,12 +388,12 @@
 
         this.start = function () {
             this.activity.loader(false);
-            this.activity.toggle();
 
-            // toggle намеренно пустой: пока в html только текстовое сообщение
-            // без селекторов, Lampa.Controller.collectionFocus() на пустой
-            // коллекции может "залипать" — пульт перестаёт отвечать. Реальный
-            // фокус ставят сами всплывающие окна Lampa.Select ниже.
+            // ВАЖНО: не вызываем здесь this.activity.toggle() — именно этот
+            // вызов внутри start() провоцировал бесконечную рекурсию через
+            // ActivitySlide.start -> ActivitySlide.toggle -> BalancerComponent.start.
+            // Отображение контента и так работает через render(), toggle() тут не нужен.
+
             Lampa.Controller.add('content', {
                 toggle: function () {},
                 back: function () {
@@ -403,9 +403,6 @@
 
             Lampa.Controller.toggle('content');
 
-            // Балансер один — не показываем окно выбора вообще, чтобы не
-            // тратить лишний переход и не плодить точки отказа. Если позже
-            // добавишь второй балансер в BALANCERS — верни openBalancerSelection().
             if (BALANCERS.length === 1) {
                 if (!getCurrentBalancer()) saveSelectedBalancer(BALANCERS[0]);
                 loadDataFromCurrentBalancer();
@@ -459,9 +456,22 @@
                 '</div>'
             );
 
+            // Защита от "залипающего" пульта: некоторые ТВ шлют несколько
+            // hover:enter подряд на одно нажатие OK — без этой защиты каждое
+            // такое событие пыталось открыть новую активность поверх ещё не
+            // отрисованной предыдущей, что и приводило к рекурсии/зависанию.
+            var isOpening = false;
+
             button.on('hover:enter', function () {
+                if (isOpening) return;
+                isOpening = true;
+
                 Lampa.Component.add(COMPONENT_NAME, BalancerComponent);
                 openBalancerActivity(e.data.movie);
+
+                setTimeout(function () {
+                    isOpening = false;
+                }, 1000);
             });
 
             root.find('.view--torrent').after(button);
