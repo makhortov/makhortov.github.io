@@ -139,17 +139,44 @@
 
     function requestBalancerData(balancer, movie, onSuccess, onError) {
         var network = new Lampa.Reguest();
+        var url = buildBalancerRequestUrl(balancer, movie);
+        var settled = false;
+
+        // Некоторые сборки Lampa не вызывают onError у Lampa.Reguest при
+        // сетевом таймауте/CORS-блокировке (запрос просто "подвисает" в
+        // браузере). watchdog ниже — гарантия, что плагин не зависнет
+        // бесконечно на экране "Загрузка данных...", даже если сам
+        // Lampa.Reguest никак не среагирует.
+        var watchdog = setTimeout(function () {
+            if (settled) return;
+            settled = true;
+            console.error('[Balancer] запрос завис (нет ответа за 20с):', url);
+            onError(new Error('Timeout waiting for balancer response'));
+        }, 20000);
+
+        console.log('[Balancer] запрос к балансеру:', url);
 
         network.timeout(15000);
 
         network.silent(
-            buildBalancerRequestUrl(balancer, movie),
+            url,
             function (data) {
+                if (settled) return;
+                settled = true;
+                clearTimeout(watchdog);
+
+                console.log('[Balancer] ответ балансера:', data);
+
                 var normalized = normalizeBackendResponse(data);
                 if (normalized) onSuccess(normalized);
                 else onError(new Error('Empty response'));
             },
             function (error) {
+                if (settled) return;
+                settled = true;
+                clearTimeout(watchdog);
+
+                console.error('[Balancer] ошибка запроса:', error);
                 onError(error);
             }
         );
