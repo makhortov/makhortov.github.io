@@ -1,12 +1,12 @@
 /**
- * ПЛАГИН "Balancer" ДЛЯ LAMPA — адаптирован под uafilms/backend
+ * ПЛАГИН "Balancer" ДЛЯ LAMPA — адаптирован под backend
  * ============================================================================
- * "Балансеры" — это ПРОВАЙДЕРЫ внутри ОДНОГО ответа API (ashdi/hdvb/uaflix/...).
+ * "Балансеры" — это ПРОВАЙДЕРЫ внутри ОДНОГО ответа API (provider1/provider2/provider3/...).
  * Бэкенд один (BACKEND_URL), один запрос /api/get возвращает сразу всё.
  *
  * ФОРМАТ ОТВЕТА (подтверждено практикой):
- *   Фильм:  { "providers": { "ashdi": [ {title,url,mime,subtitles,...}, ... ] } }
- *   Сериал: { "providers": { "ashdi": {
+ *   Фильм:  { "providers": { "provider": [ {title,url,mime,subtitles,...}, ... ] } }
+ *   Сериал: { "providers": { "provider": {
  *               "1": { "1": [ {...} ], "2": [ {...} ], ... },   // сезон -> серия -> варианты
  *               "2": { ... }
  *             } } }
@@ -367,7 +367,7 @@
 
             filter.set('filter', select);
 
-            // "Балансер" = переключатель провайдера (ashdi/hdvb/uaflix/...).
+            // "Балансер" = переключатель провайдера (provider1/provide2/provider3/...).
             filter.render().find('.filter--sort span').text('Балансер');
             filter.set(
                 'sort',
