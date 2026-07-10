@@ -37,9 +37,80 @@
     var PROVIDER_STORAGE_KEY = 'balancer_plugin_selected_provider';
     var VIEWED_STORAGE_KEY = 'online_view';
     var COMPONENT_NAME = 'balancer_source_component';
-    var PLUGIN_TITLE = 'Balancer';
+    var PLUGIN_TITLE = 'Mak Movie';
     var ITEM_TEMPLATE_NAME = 'balancer_item';
     var QUALITY_ORDER = ['2160p', '1440p', '1080p Ultra', '1080p', '720p', '480p', '360p', '240p'];
+
+    /**
+     * ========================================================================
+     * 2.1. ЛОКАЛИЗАЦИЯ (RU/UK/EN)
+     * ========================================================================
+     * Ключи, специфичные для этого плагина. Общие фразы (сезон/серия/озвучка/
+     * фильтр/контекстное меню и т.д.) берутся из встроенного словаря Lampa
+     * через Lampa.Lang.translate, чтобы не дублировать переводы, которые уже
+     * есть в самом приложении.
+     */
+    function initLang() {
+        if (!Lampa.Lang) return;
+
+        Lampa.Lang.add({
+            balancer_provider: {
+                ru: 'Балансер',
+                uk: 'Балансер',
+                en: 'Balancer'
+            },
+            balancer_watch: {
+                ru: 'Смотреть через ' + PLUGIN_TITLE,
+                uk: 'Дивитися через ' + PLUGIN_TITLE,
+                en: 'Watch via ' + PLUGIN_TITLE
+            },
+            balancer_description: {
+                ru: 'Источник воспроизведения через собственный backend',
+                uk: 'Джерело відтворення через власний backend',
+                en: 'Playback source via a custom backend'
+            },
+            balancer_no_link: {
+                ru: 'У выбранного варианта нет ссылки на видео.',
+                uk: 'У обраного варіанта немає посилання на відео.',
+                en: 'The selected item has no video link.'
+            },
+            balancer_clearmark_all: {
+                ru: 'Снять отметку у всех',
+                uk: 'Зняти позначку у всіх',
+                en: 'Uncheck all'
+            },
+            balancer_timeclear_all: {
+                ru: 'Сбросить тайм-код у всех',
+                uk: 'Скинути тайм-код у всіх',
+                en: 'Reset timecode for all'
+            },
+            balancer_context_helper: {
+                ru: 'Удерживайте клавишу "ОК" для вызова контекстного меню',
+                uk: 'Утримуйте клавішу "ОК" для виклику контекстного меню',
+                en: 'Hold the "OK" key to bring up the context menu'
+            },
+            balancer_empty_no_variants: {
+                ru: 'Провайдер не вернул вариантов воспроизведения',
+                uk: 'Провайдер не повернув варіантів відтворення',
+                en: 'The provider returned no playback options'
+            },
+            balancer_empty_no_providers: {
+                ru: 'Ни один провайдер не вернул ссылок для этого тайтла',
+                uk: 'Жоден провайдер не повернув посилань для цього тайтла',
+                en: 'No provider returned links for this title'
+            },
+            balancer_empty_backend_error: {
+                ru: 'Не удалось получить данные от бэкенда',
+                uk: 'Не вдалося отримати дані від бекенда',
+                en: 'Failed to get data from the backend'
+            },
+            balancer_noty_backend_error: {
+                ru: 'Ошибка запроса к бэкенду',
+                uk: 'Помилка запиту до бекенда',
+                en: 'Backend request error'
+            }
+        });
+    }
 
     /**
      * ========================================================================
@@ -358,7 +429,7 @@
 
     function playRow(movie, row, allRows, isSeries, viewed, item) {
         if (!row.group || !row.group.url) {
-            Lampa.Noty.show('У выбранного варианта нет ссылки на видео.');
+            Lampa.Noty.show(Lampa.Lang.translate('balancer_no_link'));
             return;
         }
 
@@ -473,23 +544,24 @@
         function applyFilterUI() {
             var select = [];
 
+            var seasonLabel = Lampa.Lang.translate('torrent_serial_season');
+            var voiceLabel = Lampa.Lang.translate('torrent_parser_voice');
+            var resetLabel = Lampa.Lang.translate('torrent_parser_reset');
+
             if (normalizedData.type === 'series') {
                 var seasons = normalizedData.providers[selectedProvider] || {};
                 var seasonKeys = sortedNumericKeys(seasons);
-                var seasonNames = seasonKeys.map(function (key) {
-                    return 'Сезон ' + key;
-                });
 
-                select.push({ title: 'Сбросить', reset: true });
+                select.push({ title: resetLabel, reset: true });
 
                 if (seasonKeys.length) {
                     var seasonIndex = seasonKeys.indexOf(selectedSeasonKey);
                     var seasonItems = seasonKeys.map(function (key, i) {
-                        return { title: 'Сезон ' + key, selected: i === seasonIndex, index: i, key: key };
+                        return { title: seasonLabel + ' ' + key, selected: i === seasonIndex, index: i, key: key };
                     });
                     select.push({
-                        title: 'Сезон',
-                        subtitle: 'Сезон ' + selectedSeasonKey,
+                        title: seasonLabel,
+                        subtitle: seasonLabel + ' ' + selectedSeasonKey,
                         items: seasonItems,
                         stype: 'season'
                     });
@@ -503,7 +575,7 @@
                             return { title: name, selected: i === voiceIndex, index: i };
                         });
                         select.push({
-                            title: 'Озвучка',
+                            title: voiceLabel,
                             subtitle: selectedVoice,
                             items: voiceItems,
                             stype: 'voice'
@@ -511,13 +583,13 @@
                     }
                 }
             } else {
-                select.push({ title: 'Сбросить', reset: true });
+                select.push({ title: resetLabel, reset: true });
             }
 
             filter.set('filter', select);
 
             // "Балансер" = переключатель провайдера (provider1/provide2/provider3/...).
-            filter.render().find('.filter--sort span').text('Балансер');
+            filter.render().find('.filter--sort span').text(Lampa.Lang.translate('balancer_provider'));
             filter.set(
                 'sort',
                 availableProviders.map(function (name) {
@@ -531,7 +603,7 @@
 
             var chosen = [];
             if (normalizedData.type === 'series') {
-                if (selectedSeasonKey) chosen.push('Сезон ' + selectedSeasonKey);
+                if (selectedSeasonKey) chosen.push(seasonLabel + ' ' + selectedSeasonKey);
                 if (selectedVoice) chosen.push(selectedVoice);
             }
             filter.chosen('filter', chosen);
@@ -546,13 +618,14 @@
                 var season = seasons[selectedSeasonKey] || {};
                 var episodeKeys = sortedNumericKeys(season);
 
+                var episodeLabel = Lampa.Lang.translate('torrent_serial_episode');
                 var rows = [];
                 episodeKeys.forEach(function (episodeKey) {
                     var group = groupEpisodeVariant(season[episodeKey], selectedVoice);
                     if (!group) return;
 
                     rows.push({
-                        title: 'Серия ' + episodeKey,
+                        title: episodeLabel + ' ' + episodeKey,
                         quality: Object.keys(group.qualitys).join(' / ') || 'Auto',
                         info: group.subtitles ? ' / CC' : '',
                         seasonKey: selectedSeasonKey,
@@ -584,9 +657,9 @@
                 var menu = [
                     { title: Lampa.Lang.translate('torrent_parser_label_title'), mark: true },
                     { title: Lampa.Lang.translate('torrent_parser_label_cancel_title'), clearmark: true },
-                    { title: 'Снять отметку у всех', clearmark_all: true },
+                    { title: Lampa.Lang.translate('balancer_clearmark_all'), clearmark_all: true },
                     { title: Lampa.Lang.translate('time_reset'), timeclear: true },
-                    { title: 'Сбросить тайм-код у всех', timeclear_all: true }
+                    { title: Lampa.Lang.translate('balancer_timeclear_all'), timeclear_all: true }
                 ];
 
                 if (Lampa.Platform.is('android')) {
@@ -655,7 +728,7 @@
                     }
                 });
             }).on('hover:focus', function () {
-                if (Lampa.Helper) Lampa.Helper.show('online_file', 'Удерживайте клавишу "ОК" для вызова контекстного меню', item);
+                if (Lampa.Helper) Lampa.Helper.show('online_file', Lampa.Lang.translate('balancer_context_helper'), item);
             });
         }
 
@@ -666,7 +739,7 @@
             var results = currentResults();
 
             if (!results.length) {
-                showEmptyState('Провайдер не вернул вариантов воспроизведения');
+                showEmptyState(Lampa.Lang.translate('balancer_empty_no_variants'));
                 return;
             }
 
@@ -727,7 +800,7 @@
                     availableProviders = collectAvailableProviders();
 
                     if (!availableProviders.length) {
-                        showEmptyState('Ни один провайдер не вернул ссылок для этого тайтла');
+                        showEmptyState(Lampa.Lang.translate('balancer_empty_no_providers'));
                         return;
                     }
 
@@ -737,8 +810,8 @@
                     renderList();
                 },
                 function onError() {
-                    showEmptyState('Не удалось получить данные от бэкенда');
-                    Lampa.Noty.show('Ошибка запроса к бэкенду');
+                    showEmptyState(Lampa.Lang.translate('balancer_empty_backend_error'));
+                    Lampa.Noty.show(Lampa.Lang.translate('balancer_noty_backend_error'));
                 }
             );
         }
@@ -825,7 +898,7 @@
                 },
                 right: function () {
                     if (Navigator.canmove('right')) Navigator.move('right');
-                    else filter.show('Фильтр', 'filter');
+                    else filter.show(Lampa.Lang.translate('title_filter'), 'filter');
                 },
                 left: function () {
                     if (Navigator.canmove('left')) Navigator.move('left');
@@ -878,7 +951,9 @@
 
             var button = $(
                 '<div class="full-start__button selector view--balancer" data-subtitle="' + PLUGIN_TITLE + '">' +
-                '<span>' + PLUGIN_TITLE + '</span>' +
+                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 244 260" fill="none">' +
+                '<path d="M242,88v170H10V88h41l-38,38h37.1l38-38h38.4l-38,38h38.4l38-38h38.3l-38,38H204L242,88L242,88z M228.9,2l8,37.7l0,0 L191.2,10L228.9,2z M160.6,56l-45.8-29.7l38-8.1l45.8,29.7L160.6,56z M84.5,72.1L38.8,42.4l38-8.1l45.8,29.7L84.5,72.1z M10,88 L2,50.2L47.8,80L10,88z" fill="currentColor"/>' +
+                '</svg>' +
                 '</div>'
             );
 
@@ -912,11 +987,11 @@
             type: 'video',
             version: '1.1.0',
             name: PLUGIN_TITLE,
-            description: 'Источник воспроизведения через собственный backend',
+            description: Lampa.Lang.translate('balancer_description'),
             component: COMPONENT_NAME,
             onContextMenu: function () {
                 return {
-                    name: PLUGIN_TITLE,
+                    name: Lampa.Lang.translate('balancer_watch'),
                     description: ''
                 };
             },
@@ -937,6 +1012,7 @@
         if (window.balancer_plugin_ready) return;
         window.balancer_plugin_ready = true;
 
+        initLang();
         registerBalancerPlugin();
     }
 
