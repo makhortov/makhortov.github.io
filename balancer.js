@@ -35,11 +35,22 @@
      * ========================================================================
      */
     var PROVIDER_STORAGE_KEY = 'balancer_plugin_selected_provider';
+    var AUDIO_MODE_STORAGE_KEY = 'balancer_plugin_audio_mode';
     var VIEWED_STORAGE_KEY = 'online_view';
     var COMPONENT_NAME = 'balancer_source_component';
     var PLUGIN_TITLE = 'Mak Movie';
     var ITEM_TEMPLATE_NAME = 'balancer_item';
     var QUALITY_ORDER = ['2160p', '1440p', '1080p Ultra', '1080p', '720p', '480p', '360p', '240p'];
+
+    // Соответствует параметру ?eng= бэкенда: он определяет НАБОР ПРОВАЙДЕРОВ,
+    // а не просто поле в уже полученном ответе — 0 отдаёт только украинские
+    // провайдеры, 1 — украинские и английские, 2 — только английские.
+    var AUDIO_MODES = ['0', '1', '2'];
+    var AUDIO_MODE_LABEL_KEYS = {
+        '0': 'balancer_audio_ua',
+        '1': 'balancer_audio_ua_eng',
+        '2': 'balancer_audio_eng'
+    };
 
     /**
      * ========================================================================
@@ -58,6 +69,26 @@
                 ru: 'Балансер',
                 uk: 'Балансер',
                 en: 'Balancer'
+            },
+            balancer_audio: {
+                ru: 'Аудио',
+                uk: 'Аудіо',
+                en: 'Audio'
+            },
+            balancer_audio_ua: {
+                ru: 'Украинский',
+                uk: 'Українська',
+                en: 'Ukrainian'
+            },
+            balancer_audio_ua_eng: {
+                ru: 'Украинский + Английский',
+                uk: 'Українська + Англійська',
+                en: 'Ukrainian + English'
+            },
+            balancer_audio_eng: {
+                ru: 'Английский',
+                uk: 'Англійська',
+                en: 'English'
             },
             balancer_watch: {
                 ru: 'Смотреть через ' + PLUGIN_TITLE,
@@ -121,15 +152,17 @@
         return movie && movie.name ? 'tv' : 'movie';
     }
 
-    function buildRequestUrl(movie) {
+    function buildRequestUrl(movie, audioMode) {
         var tmdbId = movie && movie.id;
         var type = detectContentType(movie);
-        return BACKEND_URL + '/api/get?id=' + encodeURIComponent(tmdbId) + '&type=' + encodeURIComponent(type);
+        var url = BACKEND_URL + '/api/get?id=' + encodeURIComponent(tmdbId) + '&type=' + encodeURIComponent(type);
+        if (AUDIO_MODES.indexOf(audioMode) !== -1) url += '&eng=' + encodeURIComponent(audioMode);
+        return url;
     }
 
-    function requestBackendData(movie, onSuccess, onError) {
+    function requestBackendData(movie, audioMode, onSuccess, onError) {
         var network = new Lampa.Reguest();
-        var url = buildRequestUrl(movie);
+        var url = buildRequestUrl(movie, audioMode);
         var settled = false;
 
         var watchdog = setTimeout(function () {
@@ -253,6 +286,15 @@
 
     function getSavedProvider() {
         return Lampa.Storage.get(PROVIDER_STORAGE_KEY, '');
+    }
+
+    function saveAudioMode(mode) {
+        Lampa.Storage.set(AUDIO_MODE_STORAGE_KEY, mode);
+    }
+
+    function getSavedAudioMode() {
+        var saved = Lampa.Storage.get(AUDIO_MODE_STORAGE_KEY, '0') + '';
+        return AUDIO_MODES.indexOf(saved) !== -1 ? saved : '0';
     }
 
     /**
@@ -491,6 +533,7 @@
         var selectedProvider = '';
         var selectedSeasonKey = '';
         var selectedVoice = '';
+        var selectedAudioMode = getSavedAudioMode();
         var last = null;
         var self = this;
 
@@ -547,12 +590,19 @@
             var seasonLabel = Lampa.Lang.translate('torrent_serial_season');
             var voiceLabel = Lampa.Lang.translate('torrent_parser_voice');
             var resetLabel = Lampa.Lang.translate('torrent_parser_reset');
+            var audioLabel = Lampa.Lang.translate('balancer_audio');
+            var audioModeIndex = AUDIO_MODES.indexOf(selectedAudioMode);
+            var audioItems = AUDIO_MODES.map(function (mode, i) {
+                return { title: Lampa.Lang.translate(AUDIO_MODE_LABEL_KEYS[mode]), selected: i === audioModeIndex, index: i, mode: mode };
+            });
+            var audioSubtitle = Lampa.Lang.translate(AUDIO_MODE_LABEL_KEYS[selectedAudioMode]);
 
             if (normalizedData.type === 'series') {
                 var seasons = normalizedData.providers[selectedProvider] || {};
                 var seasonKeys = sortedNumericKeys(seasons);
 
                 select.push({ title: resetLabel, reset: true });
+                select.push({ title: audioLabel, subtitle: audioSubtitle, items: audioItems, stype: 'audio' });
 
                 if (seasonKeys.length) {
                     var seasonIndex = seasonKeys.indexOf(selectedSeasonKey);
@@ -584,6 +634,7 @@
                 }
             } else {
                 select.push({ title: resetLabel, reset: true });
+                select.push({ title: audioLabel, subtitle: audioSubtitle, items: audioItems, stype: 'audio' });
             }
 
             filter.set('filter', select);
@@ -601,7 +652,7 @@
                 })
             );
 
-            var chosen = [];
+            var chosen = [audioSubtitle];
             if (normalizedData.type === 'series') {
                 if (selectedSeasonKey) chosen.push(seasonLabel + ' ' + selectedSeasonKey);
                 if (selectedVoice) chosen.push(selectedVoice);
@@ -795,6 +846,7 @@
 
             requestBackendData(
                 object.movie,
+                selectedAudioMode,
                 function onSuccess(data) {
                     normalizedData = data;
                     availableProviders = collectAvailableProviders();
@@ -853,6 +905,14 @@
                         applyFilterUI();
                         renderList();
                         setTimeout(self.closeFilter, 10);
+                    } else if (a.stype === 'audio') {
+                        if (b.mode === selectedAudioMode) return;
+                        // Меняет НАБОР ПРОВАЙДЕРОВ на бэкенде (?eng=), поэтому
+                        // нужен новый запрос, а не локальная пересортировка.
+                        selectedAudioMode = b.mode;
+                        saveAudioMode(selectedAudioMode);
+                        setTimeout(self.closeFilter, 10);
+                        loadData();
                     }
                 } else if (type === 'sort') {
                     // Переключение провайдера — БЕЗ повторного сетевого запроса.
