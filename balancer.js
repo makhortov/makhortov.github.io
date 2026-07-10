@@ -105,10 +105,56 @@
         };
     }
 
+    /**
+     * Переводит "родной" формат ответа uafilms/backend в формат, с которым
+     * работает остальной код плагина (showBalancerResponse и ниже).
+     *
+     * РЕАЛЬНЫЙ формат ответа /api/get (подтверждено логами с устройства):
+     *   {
+     *     "providers": {
+     *       "hdvb":    [ { title, url, mime, subtitles, poster, headers }, ... ],
+     *       "uaflix":  [ { title, url, mime, subtitles, poster, headers }, ... ],
+     *       "tortuga": [ ... ]
+     *     }
+     *   }
+     * Ключ providers — плоский список источников по провайдерам, без разбивки
+     * на сезоны/серии в этом объекте. Для сериалов структура пока не
+     * подтверждена практикой — если после теста на сериале появится другой
+     * формат (например, providers содержит season/episode в каждом элементе),
+     * этот блок нужно будет доработать под то, что реально придёт.
+     */
+    function flattenProviders(providers) {
+        var results = [];
+
+        Object.keys(providers || {}).forEach(function (providerName) {
+            var items = providers[providerName] || [];
+
+            items.forEach(function (item) {
+                if (!item || !item.url) return;
+
+                results.push({
+                    title: (item.title || 'Original') + ' [' + providerName + ']',
+                    quality: item.quality || 'Auto',
+                    url: item.url,
+                    subtitles: item.subtitles || []
+                });
+            });
+        });
+
+        return results;
+    }
+
     function normalizeBackendResponse(data) {
         if (!data) return null;
 
-        // Сериал: есть seasons
+        // Основной формат — providers (подтверждён реальным ответом сервера).
+        if (data.providers) {
+            var flat = flattenProviders(data.providers);
+            if (flat.length) return { results: flat };
+        }
+
+        // Резервная поддержка формата sources/seasons — на случай, если для
+        // сериалов бэкенд отдаёт другую структуру (пока не проверено).
         if (data.seasons && data.seasons.length) {
             return {
                 type: 'series',
@@ -119,7 +165,7 @@
                             return {
                                 episode: ep.episode,
                                 title: ep.title || ('Серія ' + ep.episode),
-                                results: (ep.sources || []).map(mapSourceToVariant)
+                                results: ep.providers ? flattenProviders(ep.providers) : (ep.sources || []).map(mapSourceToVariant)
                             };
                         })
                     };
@@ -127,7 +173,6 @@
             };
         }
 
-        // Фильм: есть sources
         if (data.sources && data.sources.length) {
             return {
                 results: data.sources.map(mapSourceToVariant)
@@ -139,44 +184,17 @@
 
     function requestBalancerData(balancer, movie, onSuccess, onError) {
         var network = new Lampa.Reguest();
-        var url = buildBalancerRequestUrl(balancer, movie);
-        var settled = false;
-
-        // Некоторые сборки Lampa не вызывают onError у Lampa.Reguest при
-        // сетевом таймауте/CORS-блокировке (запрос просто "подвисает" в
-        // браузере). watchdog ниже — гарантия, что плагин не зависнет
-        // бесконечно на экране "Загрузка данных...", даже если сам
-        // Lampa.Reguest никак не среагирует.
-        var watchdog = setTimeout(function () {
-            if (settled) return;
-            settled = true;
-            console.error('[Balancer] запрос завис (нет ответа за 20с):', url);
-            onError(new Error('Timeout waiting for balancer response'));
-        }, 20000);
-
-        console.log('[Balancer] запрос к балансеру:', url);
 
         network.timeout(15000);
 
         network.silent(
-            url,
+            buildBalancerRequestUrl(balancer, movie),
             function (data) {
-                if (settled) return;
-                settled = true;
-                clearTimeout(watchdog);
-
-                console.log('[Balancer] ответ балансера:', data);
-
                 var normalized = normalizeBackendResponse(data);
                 if (normalized) onSuccess(normalized);
                 else onError(new Error('Empty response'));
             },
             function (error) {
-                if (settled) return;
-                settled = true;
-                clearTimeout(watchdog);
-
-                console.error('[Balancer] ошибка запроса:', error);
                 onError(error);
             }
         );
