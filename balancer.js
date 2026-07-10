@@ -12,6 +12,11 @@
  *             } } }
  *   У разных провайдеров разный набор сезонов/серий — это учитывается:
  *   список сезонов/озвучек пересчитывается при каждом переключении балансера.
+ *
+ * Помимо запроса к бэкенду и переключения провайдеров, плагин повторяет
+ * стандартный UX онлайн-плагинов Lampa: прогресс просмотра (таймлайн),
+ * отметки "просмотрено", добавление в историю, автопродолжение на
+ * следующую серию и контекстное меню по долгому нажатию.
  * ============================================================================
  */
 (function () {
@@ -30,9 +35,11 @@
      * ========================================================================
      */
     var PROVIDER_STORAGE_KEY = 'balancer_plugin_selected_provider';
+    var VIEWED_STORAGE_KEY = 'online_view';
     var COMPONENT_NAME = 'balancer_source_component';
     var PLUGIN_TITLE = 'Balancer';
     var ITEM_TEMPLATE_NAME = 'balancer_item';
+    var QUALITY_ORDER = ['2160p', '1440p', '1080p Ultra', '1080p', '720p', '480p', '360p', '240p'];
 
     /**
      * ========================================================================
@@ -202,36 +209,178 @@
 
     /**
      * ========================================================================
-     * 7. ЗАПУСК ПЛЕЕРА
+     * 7. ХЭШИ ДЛЯ ТАЙМЛАЙНА И ОТМЕТОК "ПРОСМОТРЕНО"
      * ========================================================================
+     * Схема хэшей повторяет online_mod, чтобы прогресс просмотра/отметки
+     * не терялись и совпадали по смыслу с другими онлайн-плагинами.
      */
-    function playVariant(variant, movie) {
-        if (!variant || !variant.url) {
-            Lampa.Noty.show('У выбранного варианта нет ссылки на видео.');
-            return;
+    function movieHashTitle(movie) {
+        return movie.original_title || movie.original_name || movie.title || movie.name || '';
+    }
+
+    function timelineHash(movie, seasonKey, episodeKey) {
+        var title = movieHashTitle(movie);
+
+        if (seasonKey != null && episodeKey != null) {
+            return Lampa.Utils.hash([seasonKey, parseInt(seasonKey, 10) > 10 ? ':' : '', episodeKey, title].join(''));
         }
 
-        var title = variant.title || movie.title || movie.name || '';
+        return Lampa.Utils.hash(title);
+    }
 
-        Lampa.Player.play({
-            url: variant.url,
-            title: title,
-            quality: variant.quality || 'auto',
-            subtitles: variant.subtitles || []
-        });
+    function viewedHash(movie, seasonKey, episodeKey, voice) {
+        var title = movieHashTitle(movie);
 
-        Lampa.Player.playlist([
-            {
-                url: variant.url,
-                title: title,
-                subtitles: variant.subtitles || []
-            }
-        ]);
+        if (seasonKey != null && episodeKey != null) {
+            return Lampa.Utils.hash([seasonKey, parseInt(seasonKey, 10) > 10 ? ':' : '', episodeKey, title, voice || ''].join(''));
+        }
+
+        return Lampa.Utils.hash(title + (voice || ''));
     }
 
     /**
      * ========================================================================
-     * 8. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ РАБОТЫ С СЕЗОНАМИ/СЕРИЯМИ/ОЗВУЧКАМИ
+     * 8. ВЫБОР КАЧЕСТВА И ГРУППИРОВКА ВАРИАНТОВ
+     * ========================================================================
+     * Варианты с одинаковым title (одна озвучка/перевод) объединяются в одну
+     * строку списка с картой качеств {label: url}, чтобы плеер Lampa мог
+     * показать переключатель качества и подставить качество по умолчанию.
+     */
+    function resolvePreferredUrl(qualitys, fallbackUrl) {
+        if (!qualitys) return fallbackUrl;
+
+        var keys = Object.keys(qualitys);
+        if (!keys.length) return fallbackUrl;
+
+        var preferred = Lampa.Storage.get('video_quality_default', '1080') + 'p';
+        if (preferred === '1080p') preferred = '1080p Ultra';
+
+        var idx = QUALITY_ORDER.indexOf(preferred);
+        if (idx === -1) idx = QUALITY_ORDER.indexOf('1080p');
+
+        for (var i = idx; i < QUALITY_ORDER.length; i++) {
+            if (qualitys[QUALITY_ORDER[i]]) return qualitys[QUALITY_ORDER[i]];
+        }
+
+        for (var j = idx - 1; j >= 0; j--) {
+            if (qualitys[QUALITY_ORDER[j]]) return qualitys[QUALITY_ORDER[j]];
+        }
+
+        return qualitys[keys[0]] || fallbackUrl;
+    }
+
+    function renameQualityMap(qualitys) {
+        if (!qualitys) return qualitys;
+
+        var renamed = {};
+        Object.keys(qualitys).forEach(function (label) {
+            renamed['​' + label] = qualitys[label];
+        });
+
+        return renamed;
+    }
+
+    function buildVariantGroup(items) {
+        var qualitys = {};
+        var subtitles = [];
+
+        items.forEach(function (item) {
+            var label = item.quality || 'Auto';
+            if (!qualitys[label]) qualitys[label] = item.url;
+            (item.subtitles || []).forEach(function (sub) {
+                subtitles.push(sub);
+            });
+        });
+
+        return {
+            qualitys: qualitys,
+            url: items[0].url,
+            subtitles: subtitles.length ? subtitles : false
+        };
+    }
+
+    // Фильм: группируем плоский список по title (озвучка/перевод).
+    function groupMovieVariants(items) {
+        var order = [];
+        var buckets = {};
+
+        (items || []).forEach(function (item) {
+            var key = item.title || 'Original';
+            if (!buckets[key]) {
+                buckets[key] = [];
+                order.push(key);
+            }
+            buckets[key].push(item);
+        });
+
+        return order.map(function (key) {
+            var group = buildVariantGroup(buckets[key]);
+            group.title = key;
+            return group;
+        });
+    }
+
+    // Сериал: среди вариантов серии находим все совпадающие с выбранной озвучкой.
+    function groupEpisodeVariant(items, voiceTitle) {
+        var matched = (items || []).filter(function (item) {
+            return item.title === voiceTitle;
+        });
+
+        if (!matched.length) return null;
+
+        var group = buildVariantGroup(matched);
+        group.title = voiceTitle;
+        return group;
+    }
+
+    /**
+     * ========================================================================
+     * 9. ВОСПРОИЗВЕДЕНИЕ
+     * ========================================================================
+     */
+    function buildPlaylistEntry(movie, row) {
+        return {
+            url: resolvePreferredUrl(row.group.qualitys, row.group.url),
+            quality: renameQualityMap(row.group.qualitys),
+            subtitles: row.group.subtitles,
+            timeline: row.timeline,
+            title: row.seasonKey != null ? row.title : (movie.title || movie.name || row.title)
+        };
+    }
+
+    function markViewed(row, viewed, item) {
+        if (viewed.indexOf(row.viewedHash) === -1) {
+            viewed.push(row.viewedHash);
+            item.append('<div class="torrent-item__viewed">' + Lampa.Template.get('icon_star', {}, true) + '</div>');
+            Lampa.Storage.set(VIEWED_STORAGE_KEY, viewed);
+        }
+    }
+
+    function playRow(movie, row, allRows, isSeries, viewed, item) {
+        if (!row.group || !row.group.url) {
+            Lampa.Noty.show('У выбранного варианта нет ссылки на видео.');
+            return;
+        }
+
+        if (movie.id) Lampa.Favorite.add('history', movie, 100);
+
+        var first = buildPlaylistEntry(movie, row);
+        Lampa.Player.play(first);
+
+        if (isSeries) {
+            Lampa.Player.playlist(allRows.map(function (r) {
+                return r === row ? first : buildPlaylistEntry(movie, r);
+            }));
+        } else {
+            Lampa.Player.playlist([first]);
+        }
+
+        markViewed(row, viewed, item);
+    }
+
+    /**
+     * ========================================================================
+     * 10. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ РАБОТЫ С СЕЗОНАМИ/СЕРИЯМИ/ОЗВУЧКАМИ
      * ========================================================================
      */
     function sortedNumericKeys(obj) {
@@ -256,7 +405,7 @@
 
     /**
      * ========================================================================
-     * 9. КОМПОНЕНТ ИСТОЧНИКА — на базе Lampa.Explorer/Filter/Scroll
+     * 11. КОМПОНЕНТ ИСТОЧНИКА — на базе Lampa.Explorer/Filter/Scroll
      * ========================================================================
      */
     function BalancerComponent(object) {
@@ -397,33 +546,116 @@
                 var season = seasons[selectedSeasonKey] || {};
                 var episodeKeys = sortedNumericKeys(season);
 
-                var flat = [];
+                var rows = [];
                 episodeKeys.forEach(function (episodeKey) {
-                    var items = season[episodeKey] || [];
-                    var match = items.filter(function (item) {
-                        return item.title === selectedVoice;
-                    })[0];
+                    var group = groupEpisodeVariant(season[episodeKey], selectedVoice);
+                    if (!group) return;
 
-                    if (match) {
-                        flat.push({
-                            title: 'Серия ' + episodeKey,
-                            quality: match.quality,
-                            info: match.subtitles && match.subtitles.length ? ' / CC' : '',
-                            variant: match
-                        });
-                    }
+                    rows.push({
+                        title: 'Серия ' + episodeKey,
+                        quality: Object.keys(group.qualitys).join(' / ') || 'Auto',
+                        info: group.subtitles ? ' / CC' : '',
+                        seasonKey: selectedSeasonKey,
+                        episodeKey: episodeKey,
+                        voice: selectedVoice,
+                        group: group
+                    });
                 });
-                return flat;
+                return rows;
             }
 
-            var providerItems = normalizedData.providers[selectedProvider] || [];
-            return providerItems.map(function (variant) {
+            return groupMovieVariants(normalizedData.providers[selectedProvider]).map(function (group) {
                 return {
-                    title: variant.title,
-                    quality: variant.quality,
-                    info: variant.subtitles && variant.subtitles.length ? ' / CC' : '',
-                    variant: variant
+                    title: group.title,
+                    quality: Object.keys(group.qualitys).join(' / ') || 'Auto',
+                    info: group.subtitles ? ' / CC' : '',
+                    seasonKey: null,
+                    episodeKey: null,
+                    voice: group.title,
+                    group: group
                 };
+            });
+        }
+
+        function attachContextMenu(item, row, viewed, contextRows) {
+            item.on('hover:long', function () {
+                var enabled = Lampa.Controller.enabled().name;
+
+                var menu = [
+                    { title: Lampa.Lang.translate('torrent_parser_label_title'), mark: true },
+                    { title: Lampa.Lang.translate('torrent_parser_label_cancel_title'), clearmark: true },
+                    { title: 'Снять отметку у всех', clearmark_all: true },
+                    { title: Lampa.Lang.translate('time_reset'), timeclear: true },
+                    { title: 'Сбросить тайм-код у всех', timeclear_all: true }
+                ];
+
+                if (Lampa.Platform.is('android')) {
+                    menu.push({ title: Lampa.Lang.translate('player_lauch') + ' - Android', player: 'android' });
+                }
+                if (Lampa.Platform.is('webos')) {
+                    menu.push({ title: Lampa.Lang.translate('player_lauch') + ' - Webos', player: 'webos' });
+                }
+                menu.push({ title: Lampa.Lang.translate('player_lauch') + ' - Lampa', player: 'lampa' });
+                menu.push({ title: Lampa.Lang.translate('copy_link'), copylink: true });
+
+                Lampa.Select.show({
+                    title: Lampa.Lang.translate('title_action'),
+                    items: menu,
+                    onBack: function () {
+                        Lampa.Controller.toggle(enabled);
+                    },
+                    onSelect: function (a) {
+                        if (a.mark) markViewed(row, viewed, item);
+
+                        if (a.clearmark) {
+                            Lampa.Arrays.remove(viewed, row.viewedHash);
+                            Lampa.Storage.set(VIEWED_STORAGE_KEY, viewed);
+                            item.find('.torrent-item__viewed').remove();
+                        }
+
+                        if (a.clearmark_all) {
+                            contextRows.forEach(function (ctx) {
+                                Lampa.Arrays.remove(ctx.viewed, ctx.row.viewedHash);
+                                ctx.item.find('.torrent-item__viewed').remove();
+                            });
+                            Lampa.Storage.set(VIEWED_STORAGE_KEY, viewed);
+                        }
+
+                        if (a.timeclear) {
+                            row.timeline.percent = 0;
+                            row.timeline.time = 0;
+                            row.timeline.duration = 0;
+                            Lampa.Timeline.update(row.timeline);
+                        }
+
+                        if (a.timeclear_all) {
+                            contextRows.forEach(function (ctx) {
+                                ctx.row.timeline.percent = 0;
+                                ctx.row.timeline.time = 0;
+                                ctx.row.timeline.duration = 0;
+                                Lampa.Timeline.update(ctx.row.timeline);
+                            });
+                        }
+
+                        Lampa.Controller.toggle(enabled);
+
+                        if (a.player) {
+                            Lampa.Player.runas(a.player);
+                            item.trigger('hover:enter');
+                        }
+
+                        if (a.copylink) {
+                            var url = resolvePreferredUrl(row.group.qualitys, row.group.url);
+                            Lampa.Utils.copyTextToClipboard(url, function () {
+                                Lampa.Noty.show(Lampa.Lang.translate('copy_secuses'));
+                            }, function () {
+                                Lampa.Noty.show(Lampa.Lang.translate('copy_error'));
+                            });
+                        }
+                    }
+                });
+            }).on('hover:focus', function () {
+                if (Lampa.Helper) Lampa.Helper.show('online_file', 'Удерживайте клавишу "ОК" для вызова контекстного меню', item);
             });
         }
 
@@ -434,24 +666,41 @@
             var results = currentResults();
 
             if (!results.length) {
-                var empty = Lampa.Template.get('list_empty');
-                empty.find('.empty__descr').text('Провайдер не вернул вариантов воспроизведения');
-                scroll.append(empty);
-                self.activity.loader(false);
+                showEmptyState('Провайдер не вернул вариантов воспроизведения');
                 return;
             }
 
-            results.forEach(function (element) {
-                var item = Lampa.Template.get(ITEM_TEMPLATE_NAME, element);
+            var isSeries = normalizedData.type === 'series';
+            var viewed = Lampa.Storage.cache(VIEWED_STORAGE_KEY, 5000, []);
+            var contextRows = [];
+
+            results.forEach(function (row) {
+                row.timeline = Lampa.Timeline.view(timelineHash(object.movie, row.seasonKey, row.episodeKey));
+                row.viewedHash = viewedHash(object.movie, row.seasonKey, row.episodeKey, row.voice);
+
+                var item = Lampa.Template.get(ITEM_TEMPLATE_NAME, row);
+
+                item.append(Lampa.Timeline.render(row.timeline));
+                if (Lampa.Timeline.details) {
+                    item.find('.online__quality').append(Lampa.Timeline.details(row.timeline, ' / '));
+                }
+
+                if (viewed.indexOf(row.viewedHash) !== -1) {
+                    item.append('<div class="torrent-item__viewed">' + Lampa.Template.get('icon_star', {}, true) + '</div>');
+                }
 
                 item.on('hover:enter', function () {
-                    playVariant(element.variant, object.movie);
+                    playRow(object.movie, row, results, isSeries, viewed, item);
                 });
 
                 item.on('hover:focus', function (e) {
                     last = e.target;
                     scroll.update($(e.target), true);
                 });
+
+                var contextEntry = { item: item, row: row, viewed: viewed };
+                contextRows.push(contextEntry);
+                attachContextMenu(item, row, viewed, contextRows);
 
                 scroll.append(item);
             });
@@ -601,7 +850,7 @@
 
     /**
      * ========================================================================
-     * 10. ЗАПУСК ИСТОЧНИКА
+     * 12. ЗАПУСК ИСТОЧНИКА
      * ========================================================================
      */
     function openBalancerActivity(movie) {
@@ -616,7 +865,7 @@
 
     /**
      * ========================================================================
-     * 11. КНОПКА "BALANCER" НА КАРТОЧКЕ ФИЛЬМА
+     * 13. КНОПКА "BALANCER" НА КАРТОЧКЕ ФИЛЬМА
      * ========================================================================
      */
     function attachBalancerButtonToCard() {
@@ -653,7 +902,7 @@
 
     /**
      * ========================================================================
-     * 12. РЕГИСТРАЦИЯ ИСТОЧНИКА В LAMPA
+     * 14. РЕГИСТРАЦИЯ ИСТОЧНИКА В LAMPA
      * ========================================================================
      */
     function registerBalancerPlugin() {
@@ -661,9 +910,9 @@
 
         Lampa.Manifest.plugins = {
             type: 'video',
-            version: '1.0.0',
+            version: '1.1.0',
             name: PLUGIN_TITLE,
-            description: 'Источник воспроизведения через uafilms/backend на моей Raspberry Pi',
+            description: 'Источник воспроизведения через собственный backend',
             component: COMPONENT_NAME,
             onContextMenu: function () {
                 return {
@@ -681,7 +930,7 @@
 
     /**
      * ========================================================================
-     * 13. ТОЧКА ВХОДА ПЛАГИНА
+     * 15. ТОЧКА ВХОДА ПЛАГИНА
      * ========================================================================
      */
     function initPlugin() {
