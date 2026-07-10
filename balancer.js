@@ -1,13 +1,14 @@
 /**
  * ПЛАГИН "Balancer" ДЛЯ LAMPA — адаптирован под uafilms/backend
  * ============================================================================
- * Отличия от шаблона:
- *  - buildBalancerRequestUrl теперь строит запрос к /api/get?id=<tmdb_id>&type=<movie|tv>
- *  - добавлена normalizeBackendResponse(), которая переводит формат ответа
- *    бэкенда (sources / seasons[].number / seasons[].episodes[].episode)
- *    в формат, который использует остальной код шаблона (results / season / episode)
- *  - тип (movie/tv) определяется по наличию movie.name (у сериалов в Lampa
- *    объект фильма содержит name, у фильмов — title)
+ * ВАЖНО: "балансеры" здесь — это ПРОВАЙДЕРЫ внутри ОДНОГО ответа API
+ * (ashdi / hdvb / uaflix / ...), а не отдельные серверы. Бэкенд — один
+ * (BACKEND_URL ниже), один запрос /api/get возвращает сразу все провайдеры:
+ *
+ *   { "providers": { "ashdi": [...], "hdvb": [...], "uaflix": [...] } }
+ *
+ * Переключение "балансера" в интерфейсе — это переключение между ключами
+ * providers, БЕЗ повторного запроса к серверу (данные уже получены).
  * ============================================================================
  */
 (function () {
@@ -15,146 +16,74 @@
 
     /**
      * ========================================================================
-     * 1. СПИСОК БАЛАНСЕРОВ
+     * 1. АДРЕС БЭКЕНДА
      * ========================================================================
-     * Впиши сюда IP своей Raspberry Pi и порт, на котором слушает бэкенд.
      */
-    var BALANCERS = [
-        {
-            name: 'Мой сервер (Raspberry Pi)',
-            url: 'http://makhortov.duckdns.org:8088'
-        }
-    ];
+    var BACKEND_URL = 'http://makhortov.duckdns.org:8088';
 
     /**
      * ========================================================================
      * 2. КОНСТАНТЫ ПЛАГИНА
      * ========================================================================
      */
-    var STORAGE_KEY = 'balancer_plugin_selected_url';
+    var PROVIDER_STORAGE_KEY = 'balancer_plugin_selected_provider';
     var COMPONENT_NAME = 'balancer_source_component';
     var PLUGIN_TITLE = 'Balancer';
+    var ITEM_TEMPLATE_NAME = 'balancer_item';
 
     /**
      * ========================================================================
-     * 3. НАСТРОЙКИ: СОХРАНЕНИЕ И ВОССТАНОВЛЕНИЕ ВЫБРАННОГО БАЛАНСЕРА
+     * 3. ЗАПРОС К БЭКЕНДУ И ПЕРЕВОД ОТВЕТА В УДОБНЫЙ ФОРМАТ
      * ========================================================================
      */
-    function saveSelectedBalancer(balancer) {
-        Lampa.Storage.set(STORAGE_KEY, balancer.url);
-    }
-
-    function getSavedBalancerUrl() {
-        return Lampa.Storage.get(STORAGE_KEY, null);
-    }
-
-    function getCurrentBalancer() {
-        var savedUrl = getSavedBalancerUrl();
-        if (!savedUrl) return null;
-
-        var found = null;
-        BALANCERS.forEach(function (balancer) {
-            if (balancer.url === savedUrl) found = balancer;
-        });
-
-        return found;
-    }
-
-    /**
-     * ========================================================================
-     * 4. ПОЛУЧЕНИЕ ДАННЫХ ОТ БАЛАНСЕРА (адаптировано под uafilms/backend)
-     * ========================================================================
-     * Бэкенд ожидает: GET /api/get?id=<tmdb_id>&type=movie|tv
-     * TMDB id уже лежит в объекте фильма, который Lampa передаёт компоненту
-     * (movie.id) — отдельно искать/сопоставлять ничего не нужно.
-     */
-
-    // Определяет тип контента так, как это делает сама Lampa: у сериалов
-    // объект фильма содержит поле name, у фильмов — title (и name отсутствует).
     function detectContentType(movie) {
         return movie && movie.name ? 'tv' : 'movie';
     }
 
-    function buildBalancerRequestUrl(balancer, movie) {
+    function buildRequestUrl(movie) {
         var tmdbId = movie && movie.id;
         var type = detectContentType(movie);
-
-        return balancer.url + '/api/get?id=' + encodeURIComponent(tmdbId) + '&type=' + encodeURIComponent(type);
+        return BACKEND_URL + '/api/get?id=' + encodeURIComponent(tmdbId) + '&type=' + encodeURIComponent(type);
     }
 
-    /**
-     * Переводит "родной" формат ответа uafilms/backend в формат, с которым
-     * работает остальной код плагина (showBalancerResponse и ниже).
-     *
-     * Бэкенд для фильма отдаёт:
-     *   { sources: [ { provider, dub, quality, url, type, subtitles }, ... ] }
-     *
-     * Бэкенд для сериала отдаёт:
-     *   { seasons: [ { number, episodes: [ { season, episode, title, sources: [...] } ] } ] }
-     *
-     * Приводим source-объект к виду { title, quality, url }, где title
-     * собирается из озвучки (dub) и провайдера — так пользователь видит,
-     * что за источник выбирает.
-     */
-    function mapSourceToVariant(source) {
+    // Приводит один элемент провайдера к единому виду.
+    function mapProviderItem(item) {
         return {
-            title: (source.dub || 'Original') + ' [' + (source.provider || '?') + ']',
-            quality: source.quality || 'Auto',
-            url: source.url,
-            subtitles: source.subtitles || []
+            title: item.title || 'Original',
+            quality: item.quality || 'Auto',
+            url: item.url,
+            subtitles: item.subtitles || []
         };
     }
 
-    /**
-     * Переводит "родной" формат ответа uafilms/backend в формат, с которым
-     * работает остальной код плагина (showBalancerResponse и ниже).
-     *
-     * РЕАЛЬНЫЙ формат ответа /api/get (подтверждено логами с устройства):
-     *   {
-     *     "providers": {
-     *       "hdvb":    [ { title, url, mime, subtitles, poster, headers }, ... ],
-     *       "uaflix":  [ { title, url, mime, subtitles, poster, headers }, ... ],
-     *       "tortuga": [ ... ]
-     *     }
-     *   }
-     * Ключ providers — плоский список источников по провайдерам, без разбивки
-     * на сезоны/серии в этом объекте. Для сериалов структура пока не
-     * подтверждена практикой — если после теста на сериале появится другой
-     * формат (например, providers содержит season/episode в каждом элементе),
-     * этот блок нужно будет доработать под то, что реально придёт.
-     */
-    function flattenProviders(providers) {
-        var results = [];
+    // providers: { ashdi: [...], hdvb: [...], ... } -> тот же вид, но
+    // каждый элемент приведён к единому формату { title, quality, url, subtitles }.
+    function mapProvidersObject(providers) {
+        var result = {};
 
-        Object.keys(providers || {}).forEach(function (providerName) {
-            var items = providers[providerName] || [];
-
-            items.forEach(function (item) {
-                if (!item || !item.url) return;
-
-                results.push({
-                    title: (item.title || 'Original') + ' [' + providerName + ']',
-                    quality: item.quality || 'Auto',
-                    url: item.url,
-                    subtitles: item.subtitles || []
-                });
-            });
+        Object.keys(providers || {}).forEach(function (name) {
+            result[name] = (providers[name] || [])
+                .filter(function (item) {
+                    return item && item.url;
+                })
+                .map(mapProviderItem);
         });
 
-        return results;
+        return result;
     }
 
+    /**
+     * Реальный формат ответа /api/get (подтверждено практикой):
+     *   Фильм:   { "providers": { "ashdi": [...], "hdvb": [...], ... } }
+     *   Сериал:  предположительно { "seasons": [ { number, episodes: [
+     *              { season, episode, title, providers: {...} } ] } ] } —
+     *            структура для сериала пока не проверена вживую; если формат
+     *            окажется другим, эту ветку нужно будет доработать под то,
+     *            что реально придёт (пришли пример ответа для сериала).
+     */
     function normalizeBackendResponse(data) {
         if (!data) return null;
 
-        // Основной формат — providers (подтверждён реальным ответом сервера).
-        if (data.providers) {
-            var flat = flattenProviders(data.providers);
-            if (flat.length) return { results: flat };
-        }
-
-        // Резервная поддержка формата sources/seasons — на случай, если для
-        // сериалов бэкенд отдаёт другую структуру (пока не проверено).
         if (data.seasons && data.seasons.length) {
             return {
                 type: 'series',
@@ -165,7 +94,7 @@
                             return {
                                 episode: ep.episode,
                                 title: ep.title || ('Серія ' + ep.episode),
-                                results: ep.providers ? flattenProviders(ep.providers) : (ep.sources || []).map(mapSourceToVariant)
+                                providers: mapProvidersObject(ep.providers || {})
                             };
                         })
                     };
@@ -173,28 +102,44 @@
             };
         }
 
-        if (data.sources && data.sources.length) {
+        if (data.providers) {
             return {
-                results: data.sources.map(mapSourceToVariant)
+                type: 'movie',
+                providers: mapProvidersObject(data.providers)
             };
         }
 
         return null;
     }
 
-    function requestBalancerData(balancer, movie, onSuccess, onError) {
+    function requestBackendData(movie, onSuccess, onError) {
         var network = new Lampa.Reguest();
+        var url = buildRequestUrl(movie);
+        var settled = false;
+
+        var watchdog = setTimeout(function () {
+            if (settled) return;
+            settled = true;
+            onError(new Error('Timeout waiting for backend response'));
+        }, 20000);
 
         network.timeout(15000);
 
         network.silent(
-            buildBalancerRequestUrl(balancer, movie),
+            url,
             function (data) {
+                if (settled) return;
+                settled = true;
+                clearTimeout(watchdog);
+
                 var normalized = normalizeBackendResponse(data);
                 if (normalized) onSuccess(normalized);
                 else onError(new Error('Empty response'));
             },
             function (error) {
+                if (settled) return;
+                settled = true;
+                clearTimeout(watchdog);
                 onError(error);
             }
         );
@@ -204,11 +149,22 @@
 
     /**
      * ========================================================================
+     * 4. СОХРАНЕНИЕ ВЫБРАННОГО ПРОВАЙДЕРА (переживает перезапуск приложения)
+     * ========================================================================
+     */
+    function saveSelectedProvider(name) {
+        Lampa.Storage.set(PROVIDER_STORAGE_KEY, name);
+    }
+
+    function getSavedProvider() {
+        return Lampa.Storage.get(PROVIDER_STORAGE_KEY, '');
+    }
+
+    /**
+     * ========================================================================
      * 5. ШАБЛОН ЭЛЕМЕНТА СПИСКА (как в online_mod: иконка play + название + качество)
      * ========================================================================
      */
-    var ITEM_TEMPLATE_NAME = 'balancer_item';
-
     function registerItemTemplate() {
         Lampa.Template.add(
             ITEM_TEMPLATE_NAME,
@@ -260,12 +216,8 @@
      * ========================================================================
      * 7. КОМПОНЕНТ ИСТОЧНИКА — на базе Lampa.Explorer/Filter/Scroll
      * ========================================================================
-     * Переключатель балансера сделан ТАК ЖЕ, как "Балансер" в online_mod:
-     * подпись на кнопке сортировки Explorer'а (filter--sort) + системное
-     * окно выбора через filter.set('sort', ...). Список результатов —
-     * стандартный Lampa.Scroll с элементами по шаблону 'online_mod'-типа,
-     * поэтому фокус/навигация пультом работают из коробки, без ручного
-     * Controller.collectionFocus на самодельной разметке.
+     * "Балансер" в кнопке сортировки (filter--sort) переключает между
+     * ПРОВАЙДЕРАМИ уже полученного ответа — без повторного сетевого запроса.
      */
     function BalancerComponent(object) {
         registerItemTemplate();
@@ -275,6 +227,8 @@
         var filter = new Lampa.Filter(object);
 
         var normalizedData = null;
+        var availableProviders = [];
+        var selectedProvider = '';
         var choice = { season: 0 };
         var last = null;
         var self = this;
@@ -282,23 +236,40 @@
         scroll.body().addClass('torrent-list');
         scroll.minus(files.render().find('.explorer__files-head'));
 
-        function currentBalancerIndex() {
-            var current = getCurrentBalancer();
-            var idx = 0;
-            BALANCERS.forEach(function (b, i) {
-                if (current && b.url === current.url) idx = i;
-            });
-            return idx;
+        // Собирает список провайдеров, реально присутствующих в ответе.
+        // Для сериала — объединение провайдеров по всем сезонам/сериям
+        // (набор провайдеров обычно одинаковый для всего тайтла).
+        function collectAvailableProviders() {
+            var names = {};
+
+            if (normalizedData.type === 'movie') {
+                Object.keys(normalizedData.providers).forEach(function (name) {
+                    if (normalizedData.providers[name].length) names[name] = true;
+                });
+            } else if (normalizedData.type === 'series') {
+                normalizedData.seasons.forEach(function (season) {
+                    season.episodes.forEach(function (ep) {
+                        Object.keys(ep.providers || {}).forEach(function (name) {
+                            if (ep.providers[name].length) names[name] = true;
+                        });
+                    });
+                });
+            }
+
+            return Object.keys(names);
         }
 
-        // Строит выпадающий фильтр (иконка слева) и подпись+список кнопки
-        // сортировки (справа, "Балансер") — так же, как component.filter()
-        // в оригинальном online_mod.
+        function pickInitialProvider() {
+            var saved = getSavedProvider();
+            if (saved && availableProviders.indexOf(saved) !== -1) return saved;
+            return availableProviders[0] || '';
+        }
+
         function applyFilterUI() {
             var select = [];
             var seasonNames = [];
 
-            if (normalizedData && normalizedData.type === 'series') {
+            if (normalizedData.type === 'series') {
                 seasonNames = normalizedData.seasons.map(function (s) {
                     return 'Сезон ' + s.season;
                 });
@@ -320,16 +291,15 @@
 
             filter.set('filter', select);
 
-            // Кнопка сортировки — используем как переключатель балансера,
-            // ровно как это делает online_mod (см. filter--sort span).
+            // "Балансер" здесь = переключатель провайдера (ashdi/hdvb/uaflix/...).
             filter.render().find('.filter--sort span').text('Балансер');
             filter.set(
                 'sort',
-                BALANCERS.map(function (b, i) {
+                availableProviders.map(function (name) {
                     return {
-                        title: b.name,
-                        balancer: b,
-                        selected: i === currentBalancerIndex()
+                        title: name,
+                        provider: name,
+                        selected: name === selectedProvider
                     };
                 })
             );
@@ -337,16 +307,12 @@
             var chosen = [];
             if (seasonNames.length) chosen.push('Сезон: ' + seasonNames[choice.season]);
             filter.chosen('filter', chosen);
-
-            var currentBalancer = BALANCERS[currentBalancerIndex()];
-            filter.chosen('sort', [currentBalancer ? currentBalancer.name : '']);
+            filter.chosen('sort', [selectedProvider || '—']);
         }
 
-        // Собирает плоский список для показа: для фильма — сразу sources,
-        // для сериала — варианты выбранного сезона (все серии + все
-        // источники), с префиксом "Серия N" в названии.
+        // Список результатов для текущего выбранного провайдера.
         function currentResults() {
-            if (!normalizedData) return [];
+            if (!normalizedData || !selectedProvider) return [];
 
             if (normalizedData.type === 'series') {
                 var season = normalizedData.seasons[choice.season];
@@ -354,7 +320,8 @@
 
                 var flat = [];
                 season.episodes.forEach(function (ep) {
-                    (ep.results || []).forEach(function (variant) {
+                    var items = (ep.providers && ep.providers[selectedProvider]) || [];
+                    items.forEach(function (variant) {
                         flat.push({
                             title: 'Серия ' + ep.episode + ' — ' + variant.title,
                             quality: variant.quality,
@@ -366,7 +333,8 @@
                 return flat;
             }
 
-            return (normalizedData.results || []).map(function (variant) {
+            var providerItems = normalizedData.providers[selectedProvider] || [];
+            return providerItems.map(function (variant) {
                 return {
                     title: variant.title,
                     quality: variant.quality,
@@ -384,7 +352,7 @@
 
             if (!results.length) {
                 var empty = Lampa.Template.get('list_empty');
-                empty.find('.empty__descr').text('Балансер не вернул вариантов воспроизведения');
+                empty.find('.empty__descr').text('Провайдер не вернул вариантов воспроизведения');
                 scroll.append(empty);
                 self.activity.loader(false);
                 return;
@@ -409,34 +377,39 @@
         }
 
         function loadData() {
-            var balancer = getCurrentBalancer();
-
-            if (!balancer) {
-                self.activity.loader(false);
-                return;
-            }
-
             self.activity.loader(true);
 
-            requestBalancerData(
-                balancer,
+            requestBackendData(
                 object.movie,
                 function onSuccess(data) {
                     normalizedData = data;
+                    availableProviders = collectAvailableProviders();
+
+                    if (!availableProviders.length) {
+                        self.activity.loader(false);
+                        var empty = Lampa.Template.get('list_empty');
+                        empty.find('.empty__descr').text('Ни один провайдер не вернул ссылок для этого тайтла');
+                        scroll.render().find('.empty').remove();
+                        scroll.clear();
+                        scroll.append(empty);
+                        return;
+                    }
+
+                    selectedProvider = pickInitialProvider();
                     choice.season = 0;
                     applyFilterUI();
                     renderList();
                 },
                 function onError() {
                     self.activity.loader(false);
-                    Lampa.Noty.show('Ошибка запроса к балансеру "' + balancer.name + '"');
+                    Lampa.Noty.show('Ошибка запроса к бэкенду');
+                    var empty = Lampa.Template.get('list_empty');
+                    empty.find('.empty__descr').text('Не удалось получить данные от бэкенда');
+                    scroll.render().find('.empty').remove();
+                    scroll.clear();
+                    scroll.append(empty);
                 }
             );
-        }
-
-        function changeBalancer(balancer) {
-            saveSelectedBalancer(balancer);
-            loadData();
         }
 
         this.inActivity = function () {
@@ -472,7 +445,12 @@
                         setTimeout(self.closeFilter, 10);
                     }
                 } else if (type === 'sort') {
-                    changeBalancer(a.balancer);
+                    // Переключение провайдера — БЕЗ повторного сетевого запроса,
+                    // данные уже есть в normalizedData.
+                    selectedProvider = a.provider;
+                    saveSelectedProvider(selectedProvider);
+                    applyFilterUI();
+                    renderList();
                     setTimeout(self.closeFilter, 10);
                 }
             };
@@ -480,7 +458,6 @@
             files.appendHead(filter.render());
             files.appendFiles(scroll.render());
 
-            if (!getCurrentBalancer() && BALANCERS.length) saveSelectedBalancer(BALANCERS[0]);
             loadData();
 
             return this.render();
@@ -495,8 +472,6 @@
         };
 
         this.start = function () {
-            var _this = this;
-
             Lampa.Background.immediately(Lampa.Utils.cardImgBackground(object.movie));
 
             Lampa.Controller.add('content', {
