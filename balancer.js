@@ -21,8 +21,8 @@
      */
     var BALANCERS = [
         {
-            name: 'Oracle',
-            url: 'http://80.225.90.239:8088/'
+            name: 'Мой сервер (Raspberry Pi)',
+            url: '192.168.0.150:8088/'
         }
     ];
 
