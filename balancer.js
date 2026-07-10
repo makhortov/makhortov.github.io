@@ -22,7 +22,7 @@
     var BALANCERS = [
         {
             name: 'Мой сервер (Raspberry Pi)',
-            url: 'http://192.168.0.150:8088'
+            url: 'http://makhortov.duckdns.org:8088'
         }
     ];
 
