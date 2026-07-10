@@ -1,14 +1,17 @@
 /**
  * ПЛАГИН "Balancer" ДЛЯ LAMPA — адаптирован под uafilms/backend
  * ============================================================================
- * ВАЖНО: "балансеры" здесь — это ПРОВАЙДЕРЫ внутри ОДНОГО ответа API
- * (ashdi / hdvb / uaflix / ...), а не отдельные серверы. Бэкенд — один
- * (BACKEND_URL ниже), один запрос /api/get возвращает сразу все провайдеры:
+ * "Балансеры" — это ПРОВАЙДЕРЫ внутри ОДНОГО ответа API (ashdi/hdvb/uaflix/...).
+ * Бэкенд один (BACKEND_URL), один запрос /api/get возвращает сразу всё.
  *
- *   { "providers": { "ashdi": [...], "hdvb": [...], "uaflix": [...] } }
- *
- * Переключение "балансера" в интерфейсе — это переключение между ключами
- * providers, БЕЗ повторного запроса к серверу (данные уже получены).
+ * ФОРМАТ ОТВЕТА (подтверждено практикой):
+ *   Фильм:  { "providers": { "ashdi": [ {title,url,mime,subtitles,...}, ... ] } }
+ *   Сериал: { "providers": { "ashdi": {
+ *               "1": { "1": [ {...} ], "2": [ {...} ], ... },   // сезон -> серия -> варианты
+ *               "2": { ... }
+ *             } } }
+ *   У разных провайдеров разный набор сезонов/серий — это учитывается:
+ *   список сезонов/озвучек пересчитывается при каждом переключении балансера.
  * ============================================================================
  */
 (function () {
@@ -33,7 +36,7 @@
 
     /**
      * ========================================================================
-     * 3. ЗАПРОС К БЭКЕНДУ И ПЕРЕВОД ОТВЕТА В УДОБНЫЙ ФОРМАТ
+     * 3. ЗАПРОС К БЭКЕНДУ
      * ========================================================================
      */
     function detectContentType(movie) {
@@ -44,72 +47,6 @@
         var tmdbId = movie && movie.id;
         var type = detectContentType(movie);
         return BACKEND_URL + '/api/get?id=' + encodeURIComponent(tmdbId) + '&type=' + encodeURIComponent(type);
-    }
-
-    // Приводит один элемент провайдера к единому виду.
-    function mapProviderItem(item) {
-        return {
-            title: item.title || 'Original',
-            quality: item.quality || 'Auto',
-            url: item.url,
-            subtitles: item.subtitles || []
-        };
-    }
-
-    // providers: { ashdi: [...], hdvb: [...], ... } -> тот же вид, но
-    // каждый элемент приведён к единому формату { title, quality, url, subtitles }.
-    function mapProvidersObject(providers) {
-        var result = {};
-
-        Object.keys(providers || {}).forEach(function (name) {
-            result[name] = (providers[name] || [])
-                .filter(function (item) {
-                    return item && item.url;
-                })
-                .map(mapProviderItem);
-        });
-
-        return result;
-    }
-
-    /**
-     * Реальный формат ответа /api/get (подтверждено практикой):
-     *   Фильм:   { "providers": { "ashdi": [...], "hdvb": [...], ... } }
-     *   Сериал:  предположительно { "seasons": [ { number, episodes: [
-     *              { season, episode, title, providers: {...} } ] } ] } —
-     *            структура для сериала пока не проверена вживую; если формат
-     *            окажется другим, эту ветку нужно будет доработать под то,
-     *            что реально придёт (пришли пример ответа для сериала).
-     */
-    function normalizeBackendResponse(data) {
-        if (!data) return null;
-
-        if (data.seasons && data.seasons.length) {
-            return {
-                type: 'series',
-                seasons: data.seasons.map(function (season) {
-                    return {
-                        season: season.number,
-                        episodes: (season.episodes || []).map(function (ep) {
-                            return {
-                                episode: ep.episode,
-                                title: ep.title || ('Серія ' + ep.episode),
-                                providers: mapProvidersObject(ep.providers || {})
-                            };
-                        })
-                    };
-                })
-            };
-        }
-
-        if (data.providers) {
-            return {
-                type: 'movie',
-                providers: mapProvidersObject(data.providers)
-            };
-        }
-
-        return null;
     }
 
     function requestBackendData(movie, onSuccess, onError) {
@@ -149,7 +86,87 @@
 
     /**
      * ========================================================================
-     * 4. СОХРАНЕНИЕ ВЫБРАННОГО ПРОВАЙДЕРА (переживает перезапуск приложения)
+     * 4. ПЕРЕВОД ОТВЕТА БЭКЕНДА В УДОБНЫЙ ВИД
+     * ========================================================================
+     */
+    function isPlainObject(val) {
+        return val && typeof val === 'object' && !Array.isArray(val);
+    }
+
+    // Приводит один элемент источника к единому виду.
+    function mapProviderItem(item) {
+        return {
+            title: item.title || 'Original',
+            quality: item.quality || 'Auto',
+            url: item.url,
+            subtitles: item.subtitles || []
+        };
+    }
+
+    // Фильм: providers[name] — плоский массив вариантов.
+    function mapMovieProvidersObject(providers) {
+        var result = {};
+
+        Object.keys(providers || {}).forEach(function (name) {
+            result[name] = (providers[name] || [])
+                .filter(function (item) {
+                    return item && item.url;
+                })
+                .map(mapProviderItem);
+        });
+
+        return result;
+    }
+
+    // Сериал: providers[name] — { сезон: { серия: [варианты] } }.
+    function mapSeriesProviderData(seasonsObj) {
+        var seasons = {};
+
+        Object.keys(seasonsObj || {}).forEach(function (seasonKey) {
+            var episodesObj = seasonsObj[seasonKey] || {};
+            var episodes = {};
+
+            Object.keys(episodesObj).forEach(function (episodeKey) {
+                episodes[episodeKey] = (episodesObj[episodeKey] || [])
+                    .filter(function (item) {
+                        return item && item.url;
+                    })
+                    .map(mapProviderItem);
+            });
+
+            seasons[seasonKey] = episodes;
+        });
+
+        return seasons;
+    }
+
+    function normalizeBackendResponse(data) {
+        if (!data || !data.providers) return null;
+
+        var providerNames = Object.keys(data.providers);
+        if (!providerNames.length) return null;
+
+        // Тип определяем по фактической форме данных: если значение хотя бы
+        // одного провайдера — не массив, значит это структура сериала
+        // (сезон -> серия -> варианты), а не плоский список вариантов фильма.
+        var isSeries = providerNames.some(function (name) {
+            return isPlainObject(data.providers[name]);
+        });
+
+        if (isSeries) {
+            var mappedSeries = {};
+            providerNames.forEach(function (name) {
+                mappedSeries[name] = mapSeriesProviderData(data.providers[name]);
+            });
+            return { type: 'series', providers: mappedSeries };
+        }
+
+        return { type: 'movie', providers: mapMovieProvidersObject(data.providers) };
+    }
+
+    /**
+     * ========================================================================
+     * 5. СОХРАНЕНИЕ ВЫБРАННОГО ПРОВАЙДЕРА
      * ========================================================================
      */
     function saveSelectedProvider(name) {
@@ -162,7 +179,7 @@
 
     /**
      * ========================================================================
-     * 5. ШАБЛОН ЭЛЕМЕНТА СПИСКА (как в online_mod: иконка play + название + качество)
+     * 6. ШАБЛОН ЭЛЕМЕНТА СПИСКА (как в online_mod)
      * ========================================================================
      */
     function registerItemTemplate() {
@@ -185,7 +202,7 @@
 
     /**
      * ========================================================================
-     * 6. ЗАПУСК ПЛЕЕРА
+     * 7. ЗАПУСК ПЛЕЕРА
      * ========================================================================
      */
     function playVariant(variant, movie) {
@@ -214,10 +231,33 @@
 
     /**
      * ========================================================================
-     * 7. КОМПОНЕНТ ИСТОЧНИКА — на базе Lampa.Explorer/Filter/Scroll
+     * 8. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ РАБОТЫ С СЕЗОНАМИ/СЕРИЯМИ/ОЗВУЧКАМИ
      * ========================================================================
-     * "Балансер" в кнопке сортировки (filter--sort) переключает между
-     * ПРОВАЙДЕРАМИ уже полученного ответа — без повторного сетевого запроса.
+     */
+    function sortedNumericKeys(obj) {
+        return Object.keys(obj || {}).sort(function (a, b) {
+            return parseInt(a, 10) - parseInt(b, 10);
+        });
+    }
+
+    // Уникальные названия озвучек (item.title), встречающиеся в сезоне —
+    // хотя бы в одной серии. Пример значения: "1+1", "Original".
+    function collectVoiceNames(seasonObj) {
+        var names = [];
+
+        Object.keys(seasonObj || {}).forEach(function (episodeKey) {
+            (seasonObj[episodeKey] || []).forEach(function (item) {
+                if (item.title && names.indexOf(item.title) === -1) names.push(item.title);
+            });
+        });
+
+        return names;
+    }
+
+    /**
+     * ========================================================================
+     * 9. КОМПОНЕНТ ИСТОЧНИКА — на базе Lampa.Explorer/Filter/Scroll
+     * ========================================================================
      */
     function BalancerComponent(object) {
         registerItemTemplate();
@@ -229,34 +269,28 @@
         var normalizedData = null;
         var availableProviders = [];
         var selectedProvider = '';
-        var choice = { season: 0 };
+        var selectedSeasonKey = '';
+        var selectedVoice = '';
         var last = null;
         var self = this;
 
         scroll.body().addClass('torrent-list');
         scroll.minus(files.render().find('.explorer__files-head'));
 
-        // Собирает список провайдеров, реально присутствующих в ответе.
-        // Для сериала — объединение провайдеров по всем сезонам/сериям
-        // (набор провайдеров обычно одинаковый для всего тайтла).
         function collectAvailableProviders() {
-            var names = {};
+            var names = [];
 
             if (normalizedData.type === 'movie') {
                 Object.keys(normalizedData.providers).forEach(function (name) {
-                    if (normalizedData.providers[name].length) names[name] = true;
+                    if (normalizedData.providers[name].length) names.push(name);
                 });
-            } else if (normalizedData.type === 'series') {
-                normalizedData.seasons.forEach(function (season) {
-                    season.episodes.forEach(function (ep) {
-                        Object.keys(ep.providers || {}).forEach(function (name) {
-                            if (ep.providers[name].length) names[name] = true;
-                        });
-                    });
+            } else {
+                Object.keys(normalizedData.providers).forEach(function (name) {
+                    if (Object.keys(normalizedData.providers[name]).length) names.push(name);
                 });
             }
 
-            return Object.keys(names);
+            return names;
         }
 
         function pickInitialProvider() {
@@ -265,33 +299,75 @@
             return availableProviders[0] || '';
         }
 
+        // Пересчитывает сезон/озвучку под ТЕКУЩИЙ провайдер (у разных
+        // провайдеров разный набор сезонов). Вызывается при смене провайдера.
+        function resetSeasonAndVoiceForProvider() {
+            if (normalizedData.type !== 'series') return;
+
+            var seasons = normalizedData.providers[selectedProvider] || {};
+            var seasonKeys = sortedNumericKeys(seasons);
+            selectedSeasonKey = seasonKeys[0] || '';
+
+            resetVoiceForSeason();
+        }
+
+        function resetVoiceForSeason() {
+            if (normalizedData.type !== 'series') return;
+
+            var seasons = normalizedData.providers[selectedProvider] || {};
+            var season = seasons[selectedSeasonKey] || {};
+            var voices = collectVoiceNames(season);
+
+            selectedVoice = voices[0] || '';
+        }
+
         function applyFilterUI() {
             var select = [];
-            var seasonNames = [];
 
             if (normalizedData.type === 'series') {
-                seasonNames = normalizedData.seasons.map(function (s) {
-                    return 'Сезон ' + s.season;
+                var seasons = normalizedData.providers[selectedProvider] || {};
+                var seasonKeys = sortedNumericKeys(seasons);
+                var seasonNames = seasonKeys.map(function (key) {
+                    return 'Сезон ' + key;
                 });
-            }
 
-            select.push({ title: 'Сбросить', reset: true });
+                select.push({ title: 'Сбросить', reset: true });
 
-            if (seasonNames.length) {
-                var seasonItems = seasonNames.map(function (name, i) {
-                    return { title: name, selected: i === choice.season, index: i };
-                });
-                select.push({
-                    title: 'Сезон',
-                    subtitle: seasonNames[choice.season],
-                    items: seasonItems,
-                    stype: 'season'
-                });
+                if (seasonKeys.length) {
+                    var seasonIndex = seasonKeys.indexOf(selectedSeasonKey);
+                    var seasonItems = seasonKeys.map(function (key, i) {
+                        return { title: 'Сезон ' + key, selected: i === seasonIndex, index: i, key: key };
+                    });
+                    select.push({
+                        title: 'Сезон',
+                        subtitle: 'Сезон ' + selectedSeasonKey,
+                        items: seasonItems,
+                        stype: 'season'
+                    });
+
+                    var season = seasons[selectedSeasonKey] || {};
+                    var voices = collectVoiceNames(season);
+
+                    if (voices.length) {
+                        var voiceIndex = voices.indexOf(selectedVoice);
+                        var voiceItems = voices.map(function (name, i) {
+                            return { title: name, selected: i === voiceIndex, index: i };
+                        });
+                        select.push({
+                            title: 'Озвучка',
+                            subtitle: selectedVoice,
+                            items: voiceItems,
+                            stype: 'voice'
+                        });
+                    }
+                }
+            } else {
+                select.push({ title: 'Сбросить', reset: true });
             }
 
             filter.set('filter', select);
 
-            // "Балансер" здесь = переключатель провайдера (ashdi/hdvb/uaflix/...).
+            // "Балансер" = переключатель провайдера (ashdi/hdvb/uaflix/...).
             filter.render().find('.filter--sort span').text('Балансер');
             filter.set(
                 'sort',
@@ -305,30 +381,37 @@
             );
 
             var chosen = [];
-            if (seasonNames.length) chosen.push('Сезон: ' + seasonNames[choice.season]);
+            if (normalizedData.type === 'series') {
+                if (selectedSeasonKey) chosen.push('Сезон ' + selectedSeasonKey);
+                if (selectedVoice) chosen.push(selectedVoice);
+            }
             filter.chosen('filter', chosen);
             filter.chosen('sort', [selectedProvider || '—']);
         }
 
-        // Список результатов для текущего выбранного провайдера.
         function currentResults() {
             if (!normalizedData || !selectedProvider) return [];
 
             if (normalizedData.type === 'series') {
-                var season = normalizedData.seasons[choice.season];
-                if (!season) return [];
+                var seasons = normalizedData.providers[selectedProvider] || {};
+                var season = seasons[selectedSeasonKey] || {};
+                var episodeKeys = sortedNumericKeys(season);
 
                 var flat = [];
-                season.episodes.forEach(function (ep) {
-                    var items = (ep.providers && ep.providers[selectedProvider]) || [];
-                    items.forEach(function (variant) {
+                episodeKeys.forEach(function (episodeKey) {
+                    var items = season[episodeKey] || [];
+                    var match = items.filter(function (item) {
+                        return item.title === selectedVoice;
+                    })[0];
+
+                    if (match) {
                         flat.push({
-                            title: 'Серия ' + ep.episode + ' — ' + variant.title,
-                            quality: variant.quality,
-                            info: variant.subtitles && variant.subtitles.length ? ' / CC' : '',
-                            variant: variant
+                            title: 'Серия ' + episodeKey,
+                            quality: match.quality,
+                            info: match.subtitles && match.subtitles.length ? ' / CC' : '',
+                            variant: match
                         });
-                    });
+                    }
                 });
                 return flat;
             }
@@ -376,6 +459,15 @@
             self.activity.loader(false);
         }
 
+        function showEmptyState(message) {
+            self.activity.loader(false);
+            var empty = Lampa.Template.get('list_empty');
+            empty.find('.empty__descr').text(message);
+            scroll.render().find('.empty').remove();
+            scroll.clear();
+            scroll.append(empty);
+        }
+
         function loadData() {
             self.activity.loader(true);
 
@@ -386,28 +478,18 @@
                     availableProviders = collectAvailableProviders();
 
                     if (!availableProviders.length) {
-                        self.activity.loader(false);
-                        var empty = Lampa.Template.get('list_empty');
-                        empty.find('.empty__descr').text('Ни один провайдер не вернул ссылок для этого тайтла');
-                        scroll.render().find('.empty').remove();
-                        scroll.clear();
-                        scroll.append(empty);
+                        showEmptyState('Ни один провайдер не вернул ссылок для этого тайтла');
                         return;
                     }
 
                     selectedProvider = pickInitialProvider();
-                    choice.season = 0;
+                    resetSeasonAndVoiceForProvider();
                     applyFilterUI();
                     renderList();
                 },
                 function onError() {
-                    self.activity.loader(false);
+                    showEmptyState('Не удалось получить данные от бэкенда');
                     Lampa.Noty.show('Ошибка запроса к бэкенду');
-                    var empty = Lampa.Template.get('list_empty');
-                    empty.find('.empty__descr').text('Не удалось получить данные от бэкенда');
-                    scroll.render().find('.empty').remove();
-                    scroll.clear();
-                    scroll.append(empty);
                 }
             );
         }
@@ -435,20 +517,26 @@
             filter.onSelect = function (type, a, b) {
                 if (type === 'filter') {
                     if (a.reset) {
-                        choice.season = 0;
+                        resetSeasonAndVoiceForProvider();
                         applyFilterUI();
                         renderList();
                     } else if (a.stype === 'season') {
-                        choice.season = b.index;
+                        selectedSeasonKey = b.key;
+                        resetVoiceForSeason();
+                        applyFilterUI();
+                        renderList();
+                        setTimeout(self.closeFilter, 10);
+                    } else if (a.stype === 'voice') {
+                        selectedVoice = b.title;
                         applyFilterUI();
                         renderList();
                         setTimeout(self.closeFilter, 10);
                     }
                 } else if (type === 'sort') {
-                    // Переключение провайдера — БЕЗ повторного сетевого запроса,
-                    // данные уже есть в normalizedData.
+                    // Переключение провайдера — БЕЗ повторного сетевого запроса.
                     selectedProvider = a.provider;
                     saveSelectedProvider(selectedProvider);
+                    resetSeasonAndVoiceForProvider();
                     applyFilterUI();
                     renderList();
                     setTimeout(self.closeFilter, 10);
@@ -513,7 +601,7 @@
 
     /**
      * ========================================================================
-     * 8. ЗАПУСК ИСТОЧНИКА
+     * 10. ЗАПУСК ИСТОЧНИКА
      * ========================================================================
      */
     function openBalancerActivity(movie) {
@@ -528,7 +616,7 @@
 
     /**
      * ========================================================================
-     * 9. КНОПКА "BALANCER" НА КАРТОЧКЕ ФИЛЬМА
+     * 11. КНОПКА "BALANCER" НА КАРТОЧКЕ ФИЛЬМА
      * ========================================================================
      */
     function attachBalancerButtonToCard() {
@@ -565,7 +653,7 @@
 
     /**
      * ========================================================================
-     * 10. РЕГИСТРАЦИЯ ИСТОЧНИКА В LAMPA
+     * 12. РЕГИСТРАЦИЯ ИСТОЧНИКА В LAMPA
      * ========================================================================
      */
     function registerBalancerPlugin() {
@@ -593,7 +681,7 @@
 
     /**
      * ========================================================================
-     * 11. ТОЧКА ВХОДА ПЛАГИНА
+     * 13. ТОЧКА ВХОДА ПЛАГИНА
      * ========================================================================
      */
     function initPlugin() {
