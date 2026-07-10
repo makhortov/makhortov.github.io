@@ -363,11 +363,12 @@
             this.activity.loader(false);
             this.activity.toggle();
 
+            // toggle намеренно пустой: пока в html только текстовое сообщение
+            // без селекторов, Lampa.Controller.collectionFocus() на пустой
+            // коллекции может "залипать" — пульт перестаёт отвечать. Реальный
+            // фокус ставят сами всплывающие окна Lampa.Select ниже.
             Lampa.Controller.add('content', {
-                toggle: function () {
-                    Lampa.Controller.collectionSet(html);
-                    Lampa.Controller.collectionFocus(false, html);
-                },
+                toggle: function () {},
                 back: function () {
                     Lampa.Activity.backward();
                 }
@@ -375,12 +376,17 @@
 
             Lampa.Controller.toggle('content');
 
-            // Раз балансер у нас один (твой сервер) — не заставляем каждый
-            // раз выбирать вручную: если сохранённый уже есть, сразу грузим
-            // данные с него, иначе показываем окно выбора один раз.
-            var saved = getCurrentBalancer();
-            if (saved) loadDataFromCurrentBalancer();
-            else openBalancerSelection();
+            // Балансер один — не показываем окно выбора вообще, чтобы не
+            // тратить лишний переход и не плодить точки отказа. Если позже
+            // добавишь второй балансер в BALANCERS — верни openBalancerSelection().
+            if (BALANCERS.length === 1) {
+                if (!getCurrentBalancer()) saveSelectedBalancer(BALANCERS[0]);
+                loadDataFromCurrentBalancer();
+            } else {
+                var saved = getCurrentBalancer();
+                if (saved) loadDataFromCurrentBalancer();
+                else openBalancerSelection();
+            }
         };
 
         this.pause = function () {};
