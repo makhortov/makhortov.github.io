@@ -204,43 +204,43 @@
 
     /**
      * ========================================================================
-     * 5. ОКНО ВЫБОРА БАЛАНСЕРА
+     * 5. СТИЛИ ЭКРАНА (постер + название + ряд балансеров + список вариантов)
      * ========================================================================
+     * Внедряются один раз при первой загрузке плагина. Без внешнего CSS-файла
+     * — всё нужное для разметки лежит здесь.
      */
-    function showBalancerSelectionWindow(onSelect, onCancel) {
-        if (!BALANCERS.length) {
-            Lampa.Noty.show('Список балансеров пуст. Добавьте балансеры в массив BALANCERS в файле плагина.');
-            onCancel();
-            return;
-        }
+    function injectStyles() {
+        if (document.getElementById('balancer-plugin-styles')) return;
 
-        var currentBalancer = getCurrentBalancer();
+        var style = document.createElement('style');
+        style.id = 'balancer-plugin-styles';
+        style.textContent =
+            '.balancer-plugin{padding:1.5em 0 3em}' +
+            '.balancer-plugin__balancers{display:flex;gap:.6em;padding:0 1.5em 1.5em;flex-wrap:wrap}' +
+            '.balancer-plugin__balancer-tab{padding:.5em 1.2em;border-radius:.5em;background:rgba(255,255,255,.08);font-size:1.1em;cursor:pointer}' +
+            '.balancer-plugin__balancer-tab.active{background:rgba(255,255,255,.9);color:#000;font-weight:600}' +
+            '.balancer-plugin__balancer-tab.focus{box-shadow:0 0 0 .15em rgba(255,255,255,.9)}' +
+            '.balancer-plugin__body{display:flex;gap:2em;padding:0 1.5em}' +
+            '.balancer-plugin__poster{flex:0 0 auto}' +
+            '.balancer-plugin__poster img{width:220px;border-radius:.6em;display:block;box-shadow:0 .3em 1em rgba(0,0,0,.4)}' +
+            '.balancer-plugin__info{flex:1 1 auto;min-width:0}' +
+            '.balancer-plugin__title{font-size:1.7em;font-weight:600;margin-bottom:.2em}' +
+            '.balancer-plugin__subtitle{opacity:.7;margin-bottom:1.2em}' +
+            '.balancer-plugin__variants{display:flex;flex-direction:column;gap:.6em}' +
+            '.balancer-plugin__variant{display:flex;justify-content:space-between;align-items:center;gap:1em}' +
+            '.balancer-plugin__variant-quality{opacity:.7;font-size:.9em;white-space:nowrap}' +
+            '.balancer-plugin__cc{font-size:.7em;opacity:.8;margin-left:.5em;border:1px solid currentColor;border-radius:.3em;padding:.05em .4em;vertical-align:middle}' +
+            '.balancer-plugin__message{padding:1em 1.5em}';
 
-        var items = BALANCERS.map(function (balancer) {
-            return {
-                title: balancer.name,
-                subtitle: (currentBalancer && currentBalancer.url === balancer.url) ? 'Текущий' : balancer.url,
-                selected: !!(currentBalancer && currentBalancer.url === balancer.url),
-                balancer: balancer
-            };
-        });
-
-        Lampa.Select.show({
-            title: 'Выбор балансера',
-            items: items,
-            onSelect: function (selectedItem) {
-                onSelect(selectedItem.balancer);
-            },
-            onBack: function () {
-                onCancel();
-            }
-        });
+        document.head.appendChild(style);
     }
 
     /**
      * ========================================================================
-     * 6. ОТОБРАЖЕНИЕ ОТВЕТА БАЛАНСЕРА И ЗАПУСК ПЛЕЕРА
+     * 6. ЗАПУСК ПЛЕЕРА
      * ========================================================================
+     * Субтитры (если есть) передаются в Lampa.Player.play — плеер сам строит
+     * из них меню выбора субтитров, отдельно реализовывать это не нужно.
      */
     function playVariant(variant, movie) {
         if (!variant || !variant.url) {
@@ -260,99 +260,175 @@
         Lampa.Player.playlist([
             {
                 url: variant.url,
-                title: title
+                title: title,
+                subtitles: variant.subtitles || []
             }
         ]);
-    }
-
-    function showPlaybackVariants(results, movie, onBack) {
-        if (!results || !results.length) {
-            Lampa.Noty.show('Балансер не вернул вариантов воспроизведения.');
-            onBack();
-            return;
-        }
-
-        var items = results.map(function (variant) {
-            return {
-                title: variant.title || movie.title || movie.name || '',
-                subtitle: variant.quality || '',
-                variant: variant
-            };
-        });
-
-        Lampa.Select.show({
-            title: 'Выбор варианта воспроизведения',
-            items: items,
-            onSelect: function (item) {
-                playVariant(item.variant, movie);
-            },
-            onBack: onBack
-        });
-    }
-
-    function showSeriesEpisodes(episodes, movie, onBack) {
-        var items = episodes.map(function (episode) {
-            return {
-                title: episode.title || ('Серия ' + episode.episode),
-                episode: episode
-            };
-        });
-
-        Lampa.Select.show({
-            title: 'Выбор серии',
-            items: items,
-            onSelect: function (item) {
-                showPlaybackVariants(item.episode.results, movie, function () {
-                    showSeriesEpisodes(episodes, movie, onBack);
-                });
-            },
-            onBack: onBack
-        });
-    }
-
-    function showSeriesSeasons(seasons, movie, onBack) {
-        var items = seasons.map(function (season) {
-            return {
-                title: 'Сезон ' + season.season,
-                season: season
-            };
-        });
-
-        Lampa.Select.show({
-            title: 'Выбор сезона',
-            items: items,
-            onSelect: function (item) {
-                showSeriesEpisodes(item.season.episodes, movie, function () {
-                    showSeriesSeasons(seasons, movie, onBack);
-                });
-            },
-            onBack: onBack
-        });
-    }
-
-    function showBalancerResponse(data, movie, onBack) {
-        if (data && data.type === 'series' && data.seasons && data.seasons.length) {
-            showSeriesSeasons(data.seasons, movie, onBack);
-        } else if (data && data.results && data.results.length) {
-            showPlaybackVariants(data.results, movie, onBack);
-        } else {
-            Lampa.Noty.show('Балансер не вернул данных для воспроизведения.');
-            onBack();
-        }
     }
 
     /**
      * ========================================================================
      * 7. КОМПОНЕНТ ИСТОЧНИКА
      * ========================================================================
+     * Экран: ряд переключения балансеров сверху -> постер + название ->
+     * список вариантов озвучки/качества (с пометкой CC, если есть субтитры).
+     * Для сериала сперва открываются окна выбора сезона/серии (Lampa.Select),
+     * а результат конкретной серии отображается тем же списком вариантов.
      */
     function BalancerComponent(object) {
+        injectStyles();
+
         var html = $('<div class="balancer-plugin"></div>');
         var activeNetworkRequest = null;
 
+        function posterUrl(movie) {
+            var path = movie && (movie.poster_path || movie.poster);
+            if (!path) return '';
+            return /^https?:\/\//.test(path) ? path : ('https://image.tmdb.org/t/p/w300' + path);
+        }
+
         function renderMessage(text) {
             html.empty();
-            html.append($('<div class="balancer-plugin__message" style="padding:1em;">' + text + '</div>'));
+            html.append($('<div class="balancer-plugin__message">' + text + '</div>'));
+        }
+
+        // Ряд кнопок-балансеров сверху. Нажатие на другой балансер сохраняет
+        // выбор и перезагружает данные текущего экрана (фильма/серии) с него.
+        function renderBalancerRow(onSwitch) {
+            var row = $('<div class="balancer-plugin__balancers"></div>');
+            var current = getCurrentBalancer();
+
+            BALANCERS.forEach(function (balancer) {
+                var isActive = current && current.url === balancer.url;
+                var tab = $(
+                    '<div class="selector balancer-plugin__balancer-tab' + (isActive ? ' active' : '') + '">' +
+                    balancer.name +
+                    '</div>'
+                );
+
+                tab.on('hover:enter', function () {
+                    if (!(current && current.url === balancer.url)) {
+                        saveSelectedBalancer(balancer);
+                    }
+                    onSwitch();
+                });
+
+                row.append(tab);
+            });
+
+            return row;
+        }
+
+        // Список вариантов озвучки/качества под постером. onBack вызывается
+        // кнопкой "Назад" — либо к списку серий (для сериала), либо на
+        // карточку фильма.
+        function renderVariantsList(container, results, movie) {
+            var list = $('<div class="balancer-plugin__variants"></div>');
+
+            results.forEach(function (variant) {
+                var hasSubs = variant.subtitles && variant.subtitles.length;
+                var item = $(
+                    '<div class="selector full-start__button balancer-plugin__variant">' +
+                    '<div>' + variant.title + (hasSubs ? ' <span class="balancer-plugin__cc">CC</span>' : '') + '</div>' +
+                    '<div class="balancer-plugin__variant-quality">' + variant.quality + '</div>' +
+                    '</div>'
+                );
+
+                item.on('hover:enter', function () {
+                    playVariant(variant, movie);
+                });
+
+                list.append(item);
+            });
+
+            container.append(list);
+        }
+
+        // Рисует итоговый экран: балансеры сверху, постер+название, список
+        // вариантов. subtitleText — например "Сезон 1 · Серия 3" для серий.
+        function renderContentScreen(movie, results, subtitleText, onSwitchBalancer) {
+            html.empty();
+
+            html.append(renderBalancerRow(onSwitchBalancer));
+
+            var body = $('<div class="balancer-plugin__body"></div>');
+            var poster = posterUrl(movie);
+
+            if (poster) {
+                body.append($('<div class="balancer-plugin__poster"><img src="' + poster + '" /></div>'));
+            }
+
+            var info = $('<div class="balancer-plugin__info"></div>');
+            info.append($('<div class="balancer-plugin__title">' + (movie.title || movie.name || '') + '</div>'));
+            if (subtitleText) info.append($('<div class="balancer-plugin__subtitle">' + subtitleText + '</div>'));
+
+            if (!results || !results.length) {
+                info.append($('<div class="balancer-plugin__message">Балансер не вернул вариантов воспроизведения.</div>'));
+            } else {
+                renderVariantsList(info, results, movie);
+            }
+
+            body.append(info);
+            html.append(body);
+
+            Lampa.Controller.collectionSet(html);
+            Lampa.Controller.collectionFocus(false, html);
+        }
+
+        function showSeriesEpisodes(seasons, seasonItem, movie, onSwitchBalancer, onBack) {
+            var items = seasonItem.episodes.map(function (episode) {
+                return {
+                    title: episode.title || ('Серия ' + episode.episode),
+                    episode: episode
+                };
+            });
+
+            Lampa.Select.show({
+                title: 'Выбор серии',
+                items: items,
+                onSelect: function (item) {
+                    renderContentScreen(
+                        movie,
+                        item.episode.results,
+                        'Сезон ' + seasonItem.season + ' · Серия ' + item.episode.episode,
+                        onSwitchBalancer
+                    );
+                },
+                onBack: onBack
+            });
+        }
+
+        function showSeriesSeasons(seasons, movie, onSwitchBalancer, onBack) {
+            var items = seasons.map(function (season) {
+                return {
+                    title: 'Сезон ' + season.season,
+                    season: season
+                };
+            });
+
+            Lampa.Select.show({
+                title: 'Выбор сезона',
+                items: items,
+                onSelect: function (item) {
+                    showSeriesEpisodes(seasons, item.season, movie, onSwitchBalancer, function () {
+                        showSeriesSeasons(seasons, movie, onSwitchBalancer, onBack);
+                    });
+                },
+                onBack: onBack
+            });
+        }
+
+        function showBalancerResponse(data, movie, onSwitchBalancer) {
+            if (data && data.type === 'series' && data.seasons && data.seasons.length) {
+                showSeriesSeasons(data.seasons, movie, onSwitchBalancer, function () {
+                    Lampa.Activity.backward();
+                });
+            } else if (data && data.results && data.results.length) {
+                renderContentScreen(movie, data.results, '', onSwitchBalancer);
+            } else {
+                Lampa.Noty.show('Балансер не вернул данных для воспроизведения.');
+                Lampa.Activity.backward();
+            }
         }
 
         function loadDataFromCurrentBalancer() {
@@ -369,11 +445,7 @@
                 balancer,
                 object.movie,
                 function onSuccess(data) {
-                    renderMessage('Выбор варианта воспроизведения…');
-
-                    showBalancerResponse(data, object.movie, function () {
-                        Lampa.Activity.backward();
-                    });
+                    showBalancerResponse(data, object.movie, loadDataFromCurrentBalancer);
                 },
                 function onError() {
                     renderMessage('Не удалось получить данные от балансера "' + balancer.name + '".');
@@ -382,21 +454,9 @@
             );
         }
 
-        function openBalancerSelection() {
-            showBalancerSelectionWindow(
-                function onSelect(balancer) {
-                    saveSelectedBalancer(balancer);
-                    loadDataFromCurrentBalancer();
-                },
-                function onCancel() {
-                    Lampa.Activity.backward();
-                }
-            );
-        }
-
         this.create = function () {
             this.activity.loader(true);
-            renderMessage('Выбор балансера…');
+            renderMessage('Загрузка…');
             return this.render();
         };
 
@@ -410,10 +470,12 @@
             // ВАЖНО: не вызываем здесь this.activity.toggle() — именно этот
             // вызов внутри start() провоцировал бесконечную рекурсию через
             // ActivitySlide.start -> ActivitySlide.toggle -> BalancerComponent.start.
-            // Отображение контента и так работает через render(), toggle() тут не нужен.
 
             Lampa.Controller.add('content', {
-                toggle: function () {},
+                toggle: function () {
+                    Lampa.Controller.collectionSet(html);
+                    Lampa.Controller.collectionFocus(false, html);
+                },
                 back: function () {
                     Lampa.Activity.backward();
                 }
@@ -421,14 +483,8 @@
 
             Lampa.Controller.toggle('content');
 
-            if (BALANCERS.length === 1) {
-                if (!getCurrentBalancer()) saveSelectedBalancer(BALANCERS[0]);
-                loadDataFromCurrentBalancer();
-            } else {
-                var saved = getCurrentBalancer();
-                if (saved) loadDataFromCurrentBalancer();
-                else openBalancerSelection();
-            }
+            if (!getCurrentBalancer() && BALANCERS.length) saveSelectedBalancer(BALANCERS[0]);
+            loadDataFromCurrentBalancer();
         };
 
         this.pause = function () {};
